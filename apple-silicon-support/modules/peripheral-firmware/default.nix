@@ -19,10 +19,11 @@
     hardware.firmware =
       let
         pkgs' = config.hardware.asahi.pkgs;
+        firmwareDir = config.hardware.asahi.peripheralFirmwareDirectory;
       in
       lib.mkIf
         (
-          (config.hardware.asahi.peripheralFirmwareDirectory != null)
+          (firmwareDir != null)
           && config.hardware.asahi.extractPeripheralFirmware
         )
         [
@@ -35,12 +36,25 @@
             ];
 
             buildCommand = ''
-              mkdir extracted
-              asahi-fwextract ${config.hardware.asahi.peripheralFirmwareDirectory} extracted
-
               mkdir -p $out/lib/firmware
-              cat extracted/firmware.cpio | cpio -id --quiet --no-absolute-filenames
-              mv vendorfw/* $out/lib/firmware
+
+              if [ -f ${firmwareDir}/firmware.cpio ]; then
+                echo "asahi-peripheral-firmware: using pre-extracted vendorfw format (Asahi installer 0.8.0+)..."
+                cat ${firmwareDir}/firmware.cpio | cpio -id --quiet --no-absolute-filenames
+                mv vendorfw/* $out/lib/firmware
+
+              elif [ -f ${firmwareDir}/all_firmware.tar.gz ]; then
+                echo "asahi-peripheral-firmware: using legacy raw firmware format..."
+                mkdir extracted
+                ${pkgs'.asahi-fwextract}/bin/asahi-fwextract ${firmwareDir} extracted
+                cat extracted/firmware.cpio | cpio -id --quiet --no-absolute-filenames
+                mv vendorfw/* $out/lib/firmware
+
+              else
+                echo "ERROR: No recognized Asahi firmware format found in ${firmwareDir}" >&2
+                echo "Expected: firmware.cpio (vendorfw, installer 0.8.0+) or all_firmware.tar.gz (legacy)" >&2
+                exit 1
+              fi
             '';
           })
         ];
@@ -59,12 +73,20 @@
     peripheralFirmwareDirectory = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
 
-      default = lib.findFirst (path: builtins.pathExists (path + "/all_firmware.tar.gz")) null [
-        # path when the system is operating normally
-        /boot/asahi
-        # path when the system is mounted in the installer
-        /mnt/boot/asahi
-      ];
+      default = lib.findFirst
+        (path:
+          builtins.pathExists (path + "/firmware.cpio") ||
+          builtins.pathExists (path + "/all_firmware.tar.gz")
+        )
+        null
+        [
+          # pre-extracted vendorfw format (Asahi installer 0.8.0+)
+          /boot/vendorfw
+          # legacy raw firmware format: normal boot path
+          /boot/asahi
+          # legacy raw firmware format: installer mount path
+          /mnt/boot/asahi
+        ];
 
       description = ''
         Path to the directory containing the non-free non-redistributable
@@ -73,9 +95,10 @@
         users and those interested in maximum purity will want to copy those
         files elsewhere and specify this manually.
 
-        Currently, this consists of the files `all-firmware.tar.gz` and
-        `kernelcache*`. The official Asahi Linux installer places these files
-        in the `asahi` directory of the EFI system partition when creating it.
+        Starting with Asahi installer 0.8.0, the firmware is stored on the ESP
+        as pre-extracted `firmware.cpio` (and `firmware.tar`) in the `vendorfw`
+        directory. Older installations use raw `all_firmware.tar.gz` and
+        `kernelcache*` files in the `asahi` directory.
       '';
     };
   };

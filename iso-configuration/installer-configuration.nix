@@ -53,14 +53,29 @@
       mkdir -p /tmp/.fwsetup/{esp,extracted}
 
       mount /dev/disk/by-partuuid/`cat /proc/device-tree/chosen/asahi,efi-system-partition` /tmp/.fwsetup/esp
-      ${asahi-fwextract}/bin/asahi-fwextract /tmp/.fwsetup/esp/asahi /tmp/.fwsetup/extracted
-      umount /tmp/.fwsetup/esp
 
-      pushd /tmp/.fwsetup/
-      cat /tmp/.fwsetup/extracted/firmware.cpio | ${pkgs.cpio}/bin/cpio -id --quiet --no-absolute-filenames
-      mkdir -p /lib/firmware
-      mv vendorfw/* /lib/firmware
-      popd
+      if [ -f /tmp/.fwsetup/esp/vendorfw/firmware.cpio ]; then
+        echo "Found vendorfw format (Asahi installer 0.8.0+)..."
+        pushd /tmp/.fwsetup/
+        cat /tmp/.fwsetup/esp/vendorfw/firmware.cpio | ${pkgs.cpio}/bin/cpio -id --quiet --no-absolute-filenames
+        mkdir -p /lib/firmware
+        mv vendorfw/* /lib/firmware
+        popd
+
+      elif [ -d /tmp/.fwsetup/esp/asahi ] && [ -f /tmp/.fwsetup/esp/asahi/all_firmware.tar.gz ]; then
+        echo "Found legacy firmware format..."
+        ${asahi-fwextract}/bin/asahi-fwextract /tmp/.fwsetup/esp/asahi /tmp/.fwsetup/extracted
+        pushd /tmp/.fwsetup/
+        cat /tmp/.fwsetup/extracted/firmware.cpio | ${pkgs.cpio}/bin/cpio -id --quiet --no-absolute-filenames
+        mkdir -p /lib/firmware
+        mv vendorfw/* /lib/firmware
+        popd
+
+      else
+        echo "WARNING: No Asahi firmware found in ESP. Wi-Fi and ALS may not work."
+      fi
+
+      umount /tmp/.fwsetup/esp
       rm -rf /tmp/.fwsetup
     '';
 
