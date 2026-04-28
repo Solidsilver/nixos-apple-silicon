@@ -39,22 +39,21 @@
               mkdir -p $out/lib/firmware
 
               if [ -f ${firmwareDir}/firmware.cpio ]; then
-                echo "asahi-peripheral-firmware: using pre-extracted vendorfw format (Asahi installer 0.8.0+)..."
-                cat ${firmwareDir}/firmware.cpio | cpio -id --quiet --no-absolute-filenames
-                mv vendorfw/* $out/lib/firmware
+                cpio_src=${firmwareDir}/firmware.cpio
 
               elif [ -f ${firmwareDir}/all_firmware.tar.gz ]; then
-                echo "asahi-peripheral-firmware: using legacy raw firmware format..."
                 mkdir extracted
                 ${pkgs'.asahi-fwextract}/bin/asahi-fwextract ${firmwareDir} extracted
-                cat extracted/firmware.cpio | cpio -id --quiet --no-absolute-filenames
-                mv vendorfw/* $out/lib/firmware
+                cpio_src=extracted/firmware.cpio
 
               else
                 echo "ERROR: No recognized Asahi firmware format found in ${firmwareDir}" >&2
                 echo "Expected: firmware.cpio (vendorfw, installer 0.8.0+) or all_firmware.tar.gz (legacy)" >&2
                 exit 1
               fi
+
+              cat "$cpio_src" | cpio -id --quiet --no-absolute-filenames
+              mv vendorfw/* $out/lib/firmware
             '';
           })
         ];
@@ -80,12 +79,12 @@
         )
         null
         [
-          # pre-extracted vendorfw format (Asahi installer 0.8.0+)
-          /boot/vendorfw
-          # legacy raw firmware format: normal boot path
-          /boot/asahi
-          # legacy raw firmware format: installer mount path
-          /mnt/boot/asahi
+          # path when the system is operating normally
+          /boot/vendorfw      # Asahi installer 0.8.0+
+          /boot/asahi         # legacy
+          # path when the system is mounted in the installer
+          /mnt/boot/vendorfw  # Asahi installer 0.8.0+
+          /mnt/boot/asahi     # legacy
         ];
 
       description = ''
