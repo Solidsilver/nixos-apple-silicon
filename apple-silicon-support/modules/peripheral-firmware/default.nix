@@ -7,22 +7,68 @@
 
 let
   asahiFirmwareExtractScript = pkgs.writeShellScript "asahi-firmware-extract-initrd" ''
+    set -u
     mkdir -p /run/asahi-firmware
-    esp_partuuid=$(cat /proc/device-tree/chosen/asahi,efi-system-partition 2>/dev/null || true)
-    if [ -n "$esp_partuuid" ]; then
-      mkdir -p /tmp/asahi-esp
-      if mount -t vfat /dev/disk/by-partuuid/"$esp_partuuid" /tmp/asahi-esp 2>/dev/null; then
-        if [ -f /tmp/asahi-esp/vendorfw/firmware.cpio ]; then
-          echo "Extracting Asahi firmware from ESP..."
-          ${pkgs.cpio}/bin/cpio -id --quiet --no-absolute-filenames -D /run/asahi-firmware < /tmp/asahi-esp/vendorfw/firmware.cpio
-          if [ -f /sys/module/firmware_class/parameters/path ]; then
-            echo "/run/asahi-firmware" > /sys/module/firmware_class/parameters/path
-          fi
-        fi
-        umount /tmp/asahi-esp 2>/dev/null || true
-      fi
-      rmdir /tmp/asahi-esp 2>/dev/null || true
+
+    esp_partuuid=""
+    read -r -d ''' esp_partuuid < /proc/device-tree/chosen/asahi,efi-system-partition 2>/dev/null || true
+    if [ -z "$esp_partuuid" ]; then
+      echo "Warning: could not determine Asahi ESP partition UUID"
+      exit 0
     fi
+
+    esp_dev="/dev/disk/by-partuuid/$esp_partuuid"
+
+    # Wait up to 3 seconds for udev to create the block device symlink
+    i=0
+    while [ $i -lt 30 ]; do
+      if [ -e "$esp_dev" ]; then
+        break
+      fi
+      sleep 0.1
+      i=$((i + 1))
+    done
+    if [ ! -e "$esp_dev" ]; then
+      echo "Warning: ESP block device $esp_dev not found, skipping firmware extraction"
+      exit 0
+    fi
+
+    mkdir -p /tmp/asahi-esp
+    if ! mount -t vfat "$esp_dev" /tmp/asahi-esp; then
+      echo "Warning: failed to mount ESP, skipping firmware extraction"
+      rmdir /tmp/asahi-esp 2>/dev/null || true
+      exit 0
+    fi
+
+    cleanup() {
+      umount /tmp/asahi-esp 2>/dev/null || true
+      rmdir /tmp/asahi-esp 2>/dev/null || true
+    }
+    trap cleanup EXIT
+
+    if [ -f /tmp/asahi-esp/vendorfw/firmware.cpio ]; then
+      echo "Extracting Asahi firmware from ESP..."
+      mkdir -p /tmp/asahi-fwextract
+      pushd /tmp/asahi-fwextract
+      ${pkgs.cpio}/bin/cpio -id --quiet --no-absolute-filenames < /tmp/asahi-esp/vendorfw/firmware.cpio
+      if [ -d vendorfw ]; then
+        mv vendorfw/* /run/asahi-firmware/
+        echo "Asahi firmware extracted successfully"
+      else
+        echo "Warning: firmware archive did not contain vendorfw/ directory"
+      fi
+      popd
+      rm -rf /tmp/asahi-fwextract
+      if [ -f /sys/module/firmware_class/parameters/path ]; then
+        echo "/run/asahi-firmware" > /sys/module/firmware_class/parameters/path
+        echo "Registered /run/asahi-firmware as kernel firmware search path"
+      fi
+    elif [ -f /tmp/asahi-esp/asahi/all_firmware.tar.gz ]; then
+      echo "Warning: legacy all_firmware.tar.gz found on ESP but boot-time extraction only supports vendorfw/firmware.cpio"
+    else
+      echo "Warning: vendorfw/firmware.cpio not found on ESP"
+    fi
+    exit 0
   '';
 in {
   config = lib.mkIf config.hardware.asahi.enable {
@@ -91,7 +137,7 @@ in {
       description = "Extract Asahi peripheral firmware from ESP";
       wantedBy = [ "initrd.target" ];
       after = [ "systemd-udevd.service" ];
-      before = [ "initrd-switch-root.target" ];
+      before = [ "systemd-modules-load.service" "initrd-switch-root.target" ];
       unitConfig = {
         DefaultDependencies = false;
       };
