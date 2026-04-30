@@ -16,75 +16,79 @@
       }
     ];
 
-    hardware.firmware =
-      let
+    hardware.firmware = lib.mkIf config.hardware.asahi.extractPeripheralFirmware
+      (let
         pkgs' = config.hardware.asahi.pkgs;
         firmwareDir = config.hardware.asahi.peripheralFirmwareDirectory;
-        extract = config.hardware.asahi.extractPeripheralFirmware;
-
-        # Eval-time extraction package (opt-in, for declarative/offline management)
-        evalTimePkg = pkgs.stdenv.mkDerivation {
-          name = "asahi-peripheral-firmware";
-
-          nativeBuildInputs = [
-            pkgs'.asahi-fwextract
-            pkgs.cpio
-          ];
-
-          buildCommand = ''
-            mkdir -p $out/lib/firmware
-
-            if [ -f ${firmwareDir}/firmware.cpio ]; then
-              cpio_src=${firmwareDir}/firmware.cpio
-
-            elif [ -f ${firmwareDir}/all_firmware.tar.gz ]; then
-              mkdir extracted
-              ${pkgs'.asahi-fwextract}/bin/asahi-fwextract ${firmwareDir} extracted
-              cpio_src=extracted/firmware.cpio
-
-            else
-              echo "ERROR: No recognized Asahi firmware format found in ${firmwareDir}" >&2
-              echo "Expected: firmware.cpio (vendorfw, installer 0.8.0+) or all_firmware.tar.gz (legacy)" >&2
-              exit 1
-            fi
-
-            cat "$cpio_src" | cpio -id --quiet --no-absolute-filenames
-            mv vendorfw/* $out/lib/firmware
-          '';
-        };
-
-        # Boot-time runtime symlink package (default)
-        runtimePkg = pkgs.runCommand "asahi-firmware-runtime" {} ''
-          mkdir -p $out/lib/firmware
-          ln -s /run/asahi-firmware $out/lib/firmware/updates
-        '';
       in
-      lib.mkMerge [
-        (lib.mkIf (extract && firmwareDir != null) [ evalTimePkg ])
-        (lib.mkIf (!extract) [ runtimePkg ])
-      ];
+      lib.mkIf (firmwareDir != null)
+        [
+          (pkgs.stdenv.mkDerivation {
+            name = "asahi-peripheral-firmware";
 
-    # Boot-time extraction service: mounts ESP and extracts vendorfw before modules load
-    systemd.services.asahi-firmware-extract = lib.mkIf (!config.hardware.asahi.extractPeripheralFirmware) {
+            nativeBuildInputs = [
+              pkgs'.asahi-fwextract
+              pkgs.cpio
+            ];
+
+            buildCommand = ''
+              mkdir -p $out/lib/firmware
+
+              if [ -f ${firmwareDir}/firmware.cpio ]; then
+                cpio_src=${firmwareDir}/firmware.cpio
+
+              elif [ -f ${firmwareDir}/all_firmware.tar.gz ]; then
+                mkdir extracted
+                ${pkgs'.asahi-fwextract}/bin/asahi-fwextract ${firmwareDir} extracted
+                cpio_src=extracted/firmware.cpio
+
+              else
+                echo "ERROR: No recognized Asahi firmware format found in ${firmwareDir}" >&2
+                echo "Expected: firmware.cpio (vendorfw, installer 0.8.0+) or all_firmware.tar.gz (legacy)" >&2
+                exit 1
+              fi
+
+              cat "$cpio_src" | cpio -id --quiet --no-absolute-filenames
+              mv vendorfw/* $out/lib/firmware
+            '';
+          })
+        ]);
+
+    # Add vfat modules to initrd for ESP mounting
+    boot.initrd.availableKernelModules = lib.mkIf (!config.hardware.asahi.extractPeripheralFirmware) [
+      "vfat"
+      "nls_cp437"
+      "nls_iso8859-1"
+    ];
+
+    # Systemd stage 1 initrd service: mount ESP, extract vendorfw, register firmware path
+    boot.initrd.systemd.storePaths = lib.mkIf (!config.hardware.asahi.extractPeripheralFirmware) [
+      pkgs.cpio
+    ];
+
+    boot.initrd.systemd.services.asahi-firmware-extract = lib.mkIf (!config.hardware.asahi.extractPeripheralFirmware) {
       description = "Extract Asahi peripheral firmware from ESP";
-      wantedBy = [ "systemd-modules-load.service" ];
-      before = [ "systemd-modules-load.service" "systemd-udevd.service" ];
-      after = [ "systemd-journald.socket" ];
+      wantedBy = [ "initrd.target" ];
+      after = [ "systemd-udevd.service" ];
+      before = [ "initrd-switch-root.target" ];
       unitConfig = {
         DefaultDependencies = false;
       };
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        ExecStart = pkgs.writeShellScript "asahi-firmware-extract" ''
+        ExecStart = pkgs.writeShellScript "asahi-firmware-extract-initrd" ''
           mkdir -p /run/asahi-firmware
           esp_partuuid=$(cat /proc/device-tree/chosen/asahi,efi-system-partition 2>/dev/null || true)
           if [ -n "$esp_partuuid" ]; then
             mkdir -p /tmp/asahi-esp
-            if mount /dev/disk/by-partuuid/"$esp_partuuid" /tmp/asahi-esp 2>/dev/null; then
+            if mount -t vfat /dev/disk/by-partuuid/"$esp_partuuid" /tmp/asahi-esp 2>/dev/null; then
               if [ -f /tmp/asahi-esp/vendorfw/firmware.cpio ]; then
                 echo "Extracting Asahi firmware from ESP..."
                 ${pkgs.cpio}/bin/cpio -id --quiet --no-absolute-filenames -D /run/asahi-firmware < /tmp/asahi-esp/vendorfw/firmware.cpio
+                if [ -f /sys/module/firmware_class/parameters/path ]; then
+                  echo "/run/asahi-firmware" > /sys/module/firmware_class/parameters/path
+                fi
               fi
               umount /tmp/asahi-esp 2>/dev/null || true
             fi
