@@ -4,7 +4,27 @@
   lib,
   ...
 }:
-{
+
+let
+  asahiFirmwareExtractScript = pkgs.writeShellScript "asahi-firmware-extract-initrd" ''
+    mkdir -p /run/asahi-firmware
+    esp_partuuid=$(cat /proc/device-tree/chosen/asahi,efi-system-partition 2>/dev/null || true)
+    if [ -n "$esp_partuuid" ]; then
+      mkdir -p /tmp/asahi-esp
+      if mount -t vfat /dev/disk/by-partuuid/"$esp_partuuid" /tmp/asahi-esp 2>/dev/null; then
+        if [ -f /tmp/asahi-esp/vendorfw/firmware.cpio ]; then
+          echo "Extracting Asahi firmware from ESP..."
+          ${pkgs.cpio}/bin/cpio -id --quiet --no-absolute-filenames -D /run/asahi-firmware < /tmp/asahi-esp/vendorfw/firmware.cpio
+          if [ -f /sys/module/firmware_class/parameters/path ]; then
+            echo "/run/asahi-firmware" > /sys/module/firmware_class/parameters/path
+          fi
+        fi
+        umount /tmp/asahi-esp 2>/dev/null || true
+      fi
+      rmdir /tmp/asahi-esp 2>/dev/null || true
+    fi
+  '';
+in {
   config = lib.mkIf config.hardware.asahi.enable {
     assertions = lib.mkIf config.hardware.asahi.extractPeripheralFirmware [
       {
@@ -64,6 +84,7 @@
     # Systemd stage 1 initrd service: mount ESP, extract vendorfw, register firmware path
     boot.initrd.systemd.storePaths = lib.mkIf (!config.hardware.asahi.extractPeripheralFirmware) [
       pkgs.cpio
+      asahiFirmwareExtractScript
     ];
 
     boot.initrd.systemd.services.asahi-firmware-extract = lib.mkIf (!config.hardware.asahi.extractPeripheralFirmware) {
@@ -77,24 +98,7 @@
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        ExecStart = pkgs.writeShellScript "asahi-firmware-extract-initrd" ''
-          mkdir -p /run/asahi-firmware
-          esp_partuuid=$(cat /proc/device-tree/chosen/asahi,efi-system-partition 2>/dev/null || true)
-          if [ -n "$esp_partuuid" ]; then
-            mkdir -p /tmp/asahi-esp
-            if mount -t vfat /dev/disk/by-partuuid/"$esp_partuuid" /tmp/asahi-esp 2>/dev/null; then
-              if [ -f /tmp/asahi-esp/vendorfw/firmware.cpio ]; then
-                echo "Extracting Asahi firmware from ESP..."
-                ${pkgs.cpio}/bin/cpio -id --quiet --no-absolute-filenames -D /run/asahi-firmware < /tmp/asahi-esp/vendorfw/firmware.cpio
-                if [ -f /sys/module/firmware_class/parameters/path ]; then
-                  echo "/run/asahi-firmware" > /sys/module/firmware_class/parameters/path
-                fi
-              fi
-              umount /tmp/asahi-esp 2>/dev/null || true
-            fi
-            rmdir /tmp/asahi-esp 2>/dev/null || true
-          fi
-        '';
+        ExecStart = asahiFirmwareExtractScript;
       };
     };
   };
