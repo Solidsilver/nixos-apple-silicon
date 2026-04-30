@@ -30,16 +30,12 @@
             name = "asahi-peripheral-firmware";
 
             nativeBuildInputs = [
-              pkgs'.asahi-fwextract
               pkgs.cpio
             ];
 
             buildCommand = ''
-              mkdir extracted
-              asahi-fwextract ${config.hardware.asahi.peripheralFirmwareDirectory} extracted
-
               mkdir -p $out/lib/firmware
-              cat extracted/firmware.cpio | cpio -id --quiet --no-absolute-filenames
+              cat ${config.hardware.asahi.peripheralFirmwareDirectory}/firmware.cpio | cpio -id --quiet --no-absolute-filenames
               mv vendorfw/* $out/lib/firmware
             '';
           })
@@ -59,11 +55,11 @@
     peripheralFirmwareDirectory = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
 
-      default = lib.findFirst (path: builtins.pathExists (path + "/all_firmware.tar.gz")) null [
+      default = lib.findFirst (path: builtins.pathExists (path + "/firmware.cpio")) null [
         # path when the system is operating normally
-        /boot/asahi
+        /boot/vendorfw
         # path when the system is mounted in the installer
-        /mnt/boot/asahi
+        /mnt/boot/vendorfw
       ];
 
       description = ''
@@ -73,9 +69,8 @@
         users and those interested in maximum purity will want to copy those
         files elsewhere and specify this manually.
 
-        Currently, this consists of the files `all-firmware.tar.gz` and
-        `kernelcache*`. The official Asahi Linux installer places these files
-        in the `asahi` directory of the EFI system partition when creating it.
+        The official Asahi Linux installer places these files
+        in the `vendorfw` directory of the EFI system partition after extracting them.
       '';
     };
   };
