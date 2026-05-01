@@ -147,6 +147,18 @@ in {
         ExecStart = asahiFirmwareExtractScript;
       };
     };
+
+    # NixOS's udev activation script unconditionally overwrites
+    # /sys/module/firmware_class/parameters/path with the Nix store
+    # combined firmware directory. Re-point it at the initrd-extracted
+    # firmware so Wi-Fi/Bluetooth drivers find their blobs.
+    system.activationScripts.asahi-firmware-path =
+      lib.mkIf (!config.hardware.asahi.extractPeripheralFirmware)
+        (lib.stringAfter [ "udevd" ] ''
+          if [ -d /run/asahi-firmware ] && [ -e /sys/module/firmware_class/parameters/path ]; then
+            echo -n "/run/asahi-firmware" > /sys/module/firmware_class/parameters/path
+          fi
+        '');
   };
 
   options.hardware.asahi = {
