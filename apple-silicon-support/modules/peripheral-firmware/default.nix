@@ -73,28 +73,29 @@ let
     fi
 
     cleanup() {
+      rm -rf /tmp/asahi-fwextract
       umount /tmp/asahi-esp 2>/dev/null || true
       rmdir /tmp/asahi-esp 2>/dev/null || true
     }
     trap cleanup EXIT
 
+    echo "Extracting Asahi firmware from ESP..."
+
     if [ -f /tmp/asahi-esp/vendorfw/firmware.cpio ]; then
-      echo "Extracting Asahi firmware from ESP..."
       mkdir -p /tmp/asahi-fwextract
       (
         cd /tmp/asahi-fwextract
         ${pkgs.cpio}/bin/cpio -id --quiet --no-absolute-filenames < /tmp/asahi-esp/vendorfw/firmware.cpio
       )
       if [ -d /tmp/asahi-fwextract/vendorfw ]; then
-        mv /tmp/asahi-fwextract/vendorfw/* /run/asahi-firmware/
+        cp -a /tmp/asahi-fwextract/vendorfw/. /run/asahi-firmware/
         echo "Asahi firmware extracted successfully"
+        if [ -f /sys/module/firmware_class/parameters/path ]; then
+          echo -n "/run/asahi-firmware" > /sys/module/firmware_class/parameters/path
+          echo "Registered /run/asahi-firmware as kernel firmware search path"
+        fi
       else
         echo "Warning: firmware archive did not contain vendorfw/ directory"
-      fi
-      rm -rf /tmp/asahi-fwextract
-      if [ -f /sys/module/firmware_class/parameters/path ]; then
-        echo -n "/run/asahi-firmware" > /sys/module/firmware_class/parameters/path
-        echo "Registered /run/asahi-firmware as kernel firmware search path"
       fi
     elif [ -f /tmp/asahi-esp/asahi/all_firmware.tar.gz ]; then
       echo "Warning: legacy all_firmware.tar.gz found on ESP but boot-time extraction only supports vendorfw/firmware.cpio"
@@ -109,106 +110,112 @@ let
       pkgs' = cfg.pkgs;
       firmwareDir = cfg.peripheralFirmwareDirectory;
     in
-    pkgs.runCommand "asahi-peripheral-firmware" {
-      nativeBuildInputs = [
-        pkgs'.asahi-fwextract
-        pkgs.cpio
-      ];
-    } ''
-      mkdir -p $out/lib/firmware
+    pkgs.runCommand "asahi-peripheral-firmware"
+      {
+        nativeBuildInputs = [
+          pkgs'.asahi-fwextract
+          pkgs.cpio
+        ];
+      }
+      ''
+        mkdir -p $out/lib/firmware
 
-      if [ -f ${firmwareDir}/firmware.cpio ]; then
-        cpio_src=${firmwareDir}/firmware.cpio
+        if [ -f "${firmwareDir}/firmware.cpio" ]; then
+          cpio_src="${firmwareDir}/firmware.cpio"
 
-      elif [ -f ${firmwareDir}/all_firmware.tar.gz ]; then
-        mkdir extracted
-        ${pkgs'.asahi-fwextract}/bin/asahi-fwextract ${firmwareDir} extracted
-        cpio_src=extracted/firmware.cpio
+        elif [ -f "${firmwareDir}/all_firmware.tar.gz" ]; then
+          mkdir extracted
+          ${pkgs'.asahi-fwextract}/bin/asahi-fwextract "${firmwareDir}" extracted
+          cpio_src=extracted/firmware.cpio
 
-      else
-        echo "ERROR: No recognized Asahi firmware format found in ${firmwareDir}" >&2
-        echo "Expected: firmware.cpio (vendorfw, installer 0.8.0+) or all_firmware.tar.gz (legacy)" >&2
-        exit 1
-      fi
+        else
+          echo "ERROR: No recognized Asahi firmware format found in ${firmwareDir}" >&2
+          echo "Expected: firmware.cpio (installer 0.8.0+) or all_firmware.tar.gz (legacy)" >&2
+          exit 1
+        fi
 
-      cpio -id --quiet --no-absolute-filenames < "$cpio_src"
-      mv vendorfw/* $out/lib/firmware
-    '';
+        cpio -id --quiet --no-absolute-filenames < "$cpio_src"
+        cp -a vendorfw/. $out/lib/firmware
+      '';
 in
 {
-  config = lib.mkIf cfg.enable (lib.mkMerge [
-    {
-      assertions = [
-        {
-          assertion = !cfg.extractPeripheralFirmware || cfg.peripheralFirmwareDirectory != null;
-          message = ''
-            Asahi peripheral firmware extraction is enabled but the firmware
-            location appears incorrect.
-          '';
-        }
-      ];
-    }
+  config = lib.mkIf cfg.enable (
+    lib.mkMerge [
+      {
+        assertions = [
+          {
+            assertion = !cfg.extractPeripheralFirmware || cfg.peripheralFirmwareDirectory != null;
+            message = ''
+              Asahi peripheral firmware extraction is enabled but the firmware
+              location appears incorrect.
+            '';
+          }
+        ];
+      }
 
-    (lib.mkIf cfg.extractPeripheralFirmware {
-      hardware.firmware = lib.mkIf (cfg.peripheralFirmwareDirectory != null) [
-        asahiPeripheralFirmware
-      ];
-    })
+      (lib.mkIf cfg.extractPeripheralFirmware {
+        hardware.firmware = lib.mkIf (cfg.peripheralFirmwareDirectory != null) [
+          asahiPeripheralFirmware
+        ];
+      })
 
-    (lib.mkIf bootTimeFirmware {
-      # vfat + codepage modules for ESP mounting in initrd
-      boot.initrd.availableKernelModules = [
-        "vfat"
-        "nls_cp437"
-        "nls_iso8859-1"
-      ];
+      (lib.mkIf bootTimeFirmware {
+        # vfat + codepage modules for ESP mounting in initrd
+        boot.initrd.availableKernelModules = [
+          "vfat"
+          "nls_cp437"
+          "nls_iso8859-1"
+        ];
 
-      # Stage 1 systemd service: mount ESP, extract vendorfw, register firmware path.
-      # The script and cpio binary must be present in the initrd.
-      boot.initrd.systemd.storePaths = [
-        pkgs.cpio
-        asahiFirmwareExtractScript
-      ];
+        # Stage 1 systemd service: mount ESP, extract vendorfw, register firmware path.
+        # The script and cpio binary must be present in the initrd.
+        boot.initrd.systemd.storePaths = [
+          pkgs.cpio
+          asahiFirmwareExtractScript
+        ];
 
-      boot.initrd.systemd.services.asahi-firmware-extract = {
-        description = "Extract Asahi peripheral firmware from ESP";
-        wantedBy = [ "initrd.target" ];
-        after = [ "systemd-udevd.service" ];
-        before = [ "systemd-modules-load.service" "initrd-switch-root.target" ];
-        unitConfig.DefaultDependencies = false;
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-          ExecStart = asahiFirmwareExtractScript;
+        boot.initrd.systemd.services.asahi-firmware-extract = {
+          description = "Extract Asahi peripheral firmware from ESP";
+          wantedBy = [ "initrd.target" ];
+          after = [ "systemd-udevd.service" ];
+          before = [
+            "systemd-modules-load.service"
+            "initrd-switch-root.target"
+          ];
+          unitConfig.DefaultDependencies = false;
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+            ExecStart = asahiFirmwareExtractScript;
+          };
         };
-      };
 
-      # NixOS's udev activation snippet (nixpkgs:
-      # nixos/modules/services/hardware/udev.nix, the firmware-loading-path
-      # block) unconditionally overwrites
-      # /sys/module/firmware_class/parameters/path with the Nix-store combined
-      # firmware directory. Re-point it at the initrd-extracted firmware so
-      # Wi-Fi/Bluetooth drivers find their blobs. Must run after "udevd" but
-      # before systemd-modules-load triggers driver binds.
-      system.activationScripts.asahi-firmware-path = lib.stringAfter [ "udevd" ] ''
-        if [ -d /run/asahi-firmware ] && [ -e /sys/module/firmware_class/parameters/path ]; then
-          echo -n "/run/asahi-firmware" > /sys/module/firmware_class/parameters/path
-        fi
-      '';
-    })
-  ]);
+        # NixOS's udev activation snippet (nixpkgs:
+        # nixos/modules/services/hardware/udev.nix, the firmware-loading-path
+        # block) unconditionally overwrites
+        # /sys/module/firmware_class/parameters/path with the Nix-store combined
+        # firmware directory. Re-point it at the initrd-extracted firmware so
+        # Wi-Fi/Bluetooth drivers find their blobs. Must run after "udevd" but
+        # before systemd-modules-load triggers driver binds.
+        system.activationScripts.asahi-firmware-path = lib.stringAfter [ "udevd" ] ''
+          if [ -d /run/asahi-firmware ] && [ -e /sys/module/firmware_class/parameters/path ]; then
+            echo -n "/run/asahi-firmware" > /sys/module/firmware_class/parameters/path
+          fi
+        '';
+      })
+    ]
+  );
 
   options.hardware.asahi = {
     extractPeripheralFirmware = lib.mkOption {
       type = lib.types.bool;
       default = false;
       description = ''
-        When enabled, automatically extract the non-free non-redistributable
+        When enabled, extract the non-free non-redistributable
         Asahi peripheral firmware into the Nix store at evaluation time.
 
-        Enable this if you want declarative/offline firmware management, are
-        using flakes with pure evaluation, or need to use the legacy
-        <filename>asahi/all_firmware.tar.gz</filename> format.
+        Enable this if you are using the legacy <filename>asahi/all_firmware.tar.gz</filename>
+        format or want declarative/offline firmware management.
 
         The default (disabled) loads firmware from the ESP at boot time, which
         is the recommended approach and matches upstream Fedora Asahi Linux.
@@ -218,17 +225,12 @@ in
     peripheralFirmwareDirectory = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
 
-      default = lib.findFirst
-        (path:
-          builtins.pathExists (path + "/firmware.cpio")
-          || builtins.pathExists (path + "/all_firmware.tar.gz"))
-        null
-        [
-          # Path when the system is operating normally
-          /boot/asahi
-          # Path when the system is mounted in the installer
-          /mnt/boot/asahi
-        ];
+      default = lib.findFirst (path: builtins.pathExists (path + "/all_firmware.tar.gz")) null [
+        # Path when the system is operating normally
+        /boot/asahi
+        # Path when the system is mounted in the installer
+        /mnt/boot/asahi
+      ];
 
       description = ''
         Path to the directory containing the non-free non-redistributable
@@ -238,7 +240,7 @@ in
         is enabled. When boot-time loading is used (the default), firmware is read
         directly from the ESP and this option is ignored.
 
-        For declarative management, copy the firmware files elsewhere and
+        For declarative management, copy the firmware files elsewhere (like ./firmware) and
         specify this path manually.
       '';
     };

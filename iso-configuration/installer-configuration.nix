@@ -62,7 +62,7 @@
         cpio_src=/tmp/.fwsetup/extracted/firmware.cpio
 
       else
-        echo "WARNING: No Asahi firmware found in ESP. Wi-Fi and ALS may not work."
+        echo "Warning: No Asahi firmware found in ESP. Wi-Fi and ALS may not work."
         cpio_src=
       fi
 
@@ -70,7 +70,11 @@
         pushd /tmp/.fwsetup/
         cat "$cpio_src" | ${pkgs.cpio}/bin/cpio -id --quiet --no-absolute-filenames
         mkdir -p /lib/firmware
-        mv vendorfw/* /lib/firmware
+        if [ -d vendorfw ]; then
+          cp -a vendorfw/. /lib/firmware
+        else
+          echo "Warning: firmware archive did not contain vendorfw/ directory"
+        fi
         popd
       fi
 

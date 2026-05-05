@@ -245,14 +245,15 @@ The configuration above is the minimum required to produce a bootable system, bu
 
 Various non-free non-redistributable peripheral firmware files are required to use system hardware like Wi-Fi. The Asahi Linux installer grabs these from macOS and stores them on the EFI system partition when it is created. The NixOS installer loads them from there while booting so that all hardware is available during installation.
 
-By default, the Apple Silicon support module now loads peripheral firmware from the ESP at boot time (before any drivers that need it are loaded). This matches the approach used by Fedora Asahi Linux and means the firmware is not imported into the Nix store at evaluation time.
+By default, the Apple Silicon support module now loads peripheral firmware from the ESP at boot time (before any drivers that need it are loaded). This matches the approach used by Fedora Asahi Linux and means the firmware is not imported into the Nix store at evaluation time. It also means there should be no need for any manual firmware management, as in case any more firmware needs to be collected, the Asahi Installer will do it for us, as it does for Fedora.
 
-If you do not want the impurity of referencing files on the ESP (or are using flakes where this is prohibited), copy them elsewhere and specify the path explicitly, enabling eval-time extraction:
+If you prefer to manage firmware declaratively in your Nix configuration rather than reading from the ESP at boot time, enable eval-time extraction and specify the path manually:
 ```
   # Enable eval-time extraction and specify the path.
   hardware.asahi.extractPeripheralFirmware = true;
   hardware.asahi.peripheralFirmwareDirectory = ./firmware;
 ```
+Keep in mind that if also using flakes, the referenced path can't be outside your flake.
 
 If you want to install a desktop environment, you will have to uncomment the option to enable X11 and NetworkManager, then add an option to include your favorite desktop environment. You may also wish to include graphical packages such as `firefox` in `environment.systemPackages`. For example, to install Xfce:
 ```
